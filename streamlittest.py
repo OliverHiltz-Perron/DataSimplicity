@@ -77,21 +77,266 @@ def analyze_data(df):
         
         # Handle missing values
         st.subheader("🔍 Missing Values")
-        cols = st.multiselect("Select columns to check for missing values", df.columns)
-        if cols:
-            missing_df = df[cols].isnull().sum()
-            missing_df.columns = ["Number of Missing Values"]
+        
+        # Initialize session state for tracking dropped columns
+        if 'dropped_columns_history' not in st.session_state:
+            st.session_state.dropped_columns_history = []
+        if 'original_data' not in st.session_state:
+            st.session_state.original_data = df.copy()
+        
+        # Find columns with missing values
+        missing_values = df.isnull().sum()
+        columns_with_missing = missing_values[missing_values > 0]
+        
+        if not columns_with_missing.empty:
+            st.write("The following columns contain missing values:")
+            
+            # Create a DataFrame with missing value information
+            missing_df = pd.DataFrame({
+                'Column': columns_with_missing.index,
+                'Missing Values': columns_with_missing.values,
+                'Missing %': (columns_with_missing / len(df) * 100).round(2)
+            })
+            
+            # Display the missing values table
             st.dataframe(missing_df, use_container_width=True)
+            
+            # Add drop buttons for each column
+            st.write("Select columns to drop rows with missing values:")
+            
+            for col in columns_with_missing.index:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"**{col}**: {missing_values[col]} missing values")
+                with col2:
+                    if st.button(f"Drop rows with missing {col}", key=f"drop_{col}"):
+                        # Store the current state before dropping
+                        st.session_state.dropped_columns_history.append({
+                            'column': col,
+                            'timestamp': pd.Timestamp.now(),
+                            'num_rows_before': len(df)
+                        })
+                        
+                        # Drop rows with missing values in this column
+                        df.dropna(subset=[col], inplace=True)
+                        st.success(f"Dropped rows with missing values in {col}. Rows remaining: {len(df)}")
+                        st.experimental_rerun()
+            
+            # Add undo functionality
+            if st.session_state.dropped_columns_history:
+                st.subheader("Undo History")
+                st.write("You can undo the following operations:")
+                
+                for idx, action in enumerate(reversed(st.session_state.dropped_columns_history)):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"Dropped {action['column']} at {action['timestamp'].strftime('%H:%M:%S')}")
+                    with col2:
+                        if st.button("Undo", key=f"undo_{idx}"):
+                            # Restore data to the state before this drop
+                            df = st.session_state.original_data.copy()
+                            # Reapply all drops except the one being undone
+                            for hist_action in st.session_state.dropped_columns_history[:-idx-1]:
+                                df.dropna(subset=[hist_action['column']], inplace=True)
+                            # Update history
+                            st.session_state.dropped_columns_history = st.session_state.dropped_columns_history[:-idx-1]
+                            st.success(f"Undid dropping of {action['column']}")
+                            st.experimental_rerun()
+        else:
+            st.success("No missing values found in the dataset!")
 
         # Handle duplicates
         st.subheader("🔍 Duplicates")
-        if df.duplicated().any():
-            st.write("There are duplicate rows in the dataset.")
-            st.subheader("🔍 Duplicate Rows")
-            st.dataframe(df[df.duplicated()], use_container_width=True)
-        else:
-            st.write("No duplicate rows found in the dataset.")
         
+        # Initialize session state for tracking duplicate removals
+        if 'duplicate_removal_history' not in st.session_state:
+            st.session_state.duplicate_removal_history = []
+
+        # Check for duplicates
+        duplicate_count = df.duplicated().sum()
+        if duplicate_count > 0:
+            st.write(f"Found {duplicate_count} duplicate rows in the dataset.")
+            
+            # Show duplicate rows
+            duplicate_df = df[df.duplicated(keep='first')]
+            st.dataframe(duplicate_df, use_container_width=True)
+            
+            # Add options for handling duplicates
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                keep_option = st.selectbox(
+                    "Keep which occurrence?",
+                    ['first', 'last', 'none'],
+                    help="'first' keeps first occurrence, 'last' keeps last occurrence, 'none' removes all duplicates"
+                )
+            with col2:
+                subset_cols = st.multiselect(
+                    "Consider only specific columns for duplicates?",
+                    df.columns.tolist(),
+                    help="Leave empty to check all columns"
+                )
+            with col3:
+                if st.button("Remove Duplicates"):
+                    # Store current state
+                    st.session_state.duplicate_removal_history.append({
+                        'timestamp': pd.Timestamp.now(),
+                        'num_rows_before': len(df),
+                        'keep': keep_option,
+                        'subset': subset_cols if subset_cols else 'all columns'
+                    })
+                    
+                    # Remove duplicates
+                    df.drop_duplicates(
+                        subset=subset_cols if subset_cols else None,
+                        keep=keep_option,
+                        inplace=True
+                    )
+                    st.success(f"Removed duplicates. Rows remaining: {len(df)}")
+                    st.experimental_rerun()
+            
+            # Add undo functionality for duplicates
+            if st.session_state.duplicate_removal_history:
+                st.subheader("Undo Duplicate Removal History")
+                st.write("You can undo the following operations:")
+                
+                for idx, action in enumerate(reversed(st.session_state.duplicate_removal_history)):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        subset_info = f" (subset: {action['subset']})" if isinstance(action['subset'], list) else ""
+                        st.write(f"Removed duplicates keeping {action['keep']} occurrences{subset_info} at {action['timestamp'].strftime('%H:%M:%S')}")
+                    with col2:
+                        if st.button("Undo", key=f"undo_dup_{idx}"):
+                            # Restore data to the state before this removal
+                            df = st.session_state.original_data.copy()
+                            # Reapply all operations except the one being undone
+                            for hist_action in st.session_state.duplicate_removal_history[:-idx-1]:
+                                df.drop_duplicates(
+                                    subset=hist_action['subset'] if hist_action['subset'] != 'all columns' else None,
+                                    keep=hist_action['keep'],
+                                    inplace=True
+                                )
+                            # Update history
+                            st.session_state.duplicate_removal_history = st.session_state.duplicate_removal_history[:-idx-1]
+                            st.success(f"Undid duplicate removal operation")
+                            st.experimental_rerun()
+        else:
+            st.success("No duplicate rows found in the dataset!")
+
+        # Handle outliers
+        st.subheader("📊 Outliers")
+        
+        # Initialize session state for tracking outlier removals
+        if 'outlier_removal_history' not in st.session_state:
+            st.session_state.outlier_removal_history = []
+
+        # Get numeric columns for outlier detection
+        numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+        
+        if numeric_cols:
+            st.write("Select a numeric column to check for outliers:")
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                selected_col = st.selectbox("Column", numeric_cols)
+            with col2:
+                method = st.selectbox(
+                    "Detection Method",
+                    ["IQR", "Z-Score"],
+                    help="IQR: Uses 1.5 × InterQuartile Range, Z-Score: Uses standard deviations"
+                )
+            
+            if selected_col:
+                # Calculate outliers
+                if method == "IQR":
+                    Q1 = df[selected_col].quantile(0.25)
+                    Q3 = df[selected_col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+                    outliers = df[(df[selected_col] < lower_bound) | (df[selected_col] > upper_bound)]
+                    outlier_condition = (df[selected_col] < lower_bound) | (df[selected_col] > upper_bound)
+                else:  # Z-Score
+                    z_scores = np.abs((df[selected_col] - df[selected_col].mean()) / df[selected_col].std())
+                    outliers = df[z_scores > 3]
+                    outlier_condition = z_scores > 3
+                
+                if len(outliers) > 0:
+                    st.write(f"Found {len(outliers)} outliers in column '{selected_col}'")
+                    
+                    # Show outlier statistics
+                    st.write("Outlier Statistics:")
+                    stats_df = pd.DataFrame({
+                        'Metric': ['Count', 'Minimum', 'Maximum', 'Mean', 'Median'],
+                        'All Data': [
+                            len(df),
+                            df[selected_col].min(),
+                            df[selected_col].max(),
+                            df[selected_col].mean(),
+                            df[selected_col].median()
+                        ],
+                        'Outliers': [
+                            len(outliers),
+                            outliers[selected_col].min(),
+                            outliers[selected_col].max(),
+                            outliers[selected_col].mean(),
+                            outliers[selected_col].median()
+                        ]
+                    })
+                    st.dataframe(stats_df, use_container_width=True)
+                    
+                    # Show outlier rows
+                    st.write("Outlier Rows:")
+                    st.dataframe(outliers, use_container_width=True)
+                    
+                    # Add option to remove outliers
+                    if st.button(f"Remove outliers from {selected_col}"):
+                        # Store current state
+                        st.session_state.outlier_removal_history.append({
+                            'column': selected_col,
+                            'method': method,
+                            'timestamp': pd.Timestamp.now(),
+                            'num_rows_before': len(df),
+                            'num_outliers': len(outliers)
+                        })
+                        
+                        # Remove outliers
+                        df = df[~outlier_condition]
+                        st.success(f"Removed {len(outliers)} outliers from {selected_col}. Rows remaining: {len(df)}")
+                        st.experimental_rerun()
+                    
+                    # Add undo functionality for outliers
+                    if st.session_state.outlier_removal_history:
+                        st.subheader("Undo Outlier Removal History")
+                        st.write("You can undo the following operations:")
+                        
+                        for idx, action in enumerate(reversed(st.session_state.outlier_removal_history)):
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.write(f"Removed {action['num_outliers']} outliers from {action['column']} using {action['method']} at {action['timestamp'].strftime('%H:%M:%S')}")
+                            with col2:
+                                if st.button("Undo", key=f"undo_out_{idx}"):
+                                    # Restore data to the state before this removal
+                                    df = st.session_state.original_data.copy()
+                                    # Reapply all operations except the one being undone
+                                    for hist_action in st.session_state.outlier_removal_history[:-idx-1]:
+                                        if hist_action['method'] == "IQR":
+                                            Q1 = df[hist_action['column']].quantile(0.25)
+                                            Q3 = df[hist_action['column']].quantile(0.75)
+                                            IQR = Q3 - Q1
+                                            lower_bound = Q1 - 1.5 * IQR
+                                            upper_bound = Q3 + 1.5 * IQR
+                                            df = df[~((df[hist_action['column']] < lower_bound) | (df[hist_action['column']] > upper_bound))]
+                                        else:  # Z-Score
+                                            z_scores = np.abs((df[hist_action['column']] - df[hist_action['column']].mean()) / df[hist_action['column']].std())
+                                            df = df[~(z_scores > 3)]
+                                    # Update history
+                                    st.session_state.outlier_removal_history = st.session_state.outlier_removal_history[:-idx-1]
+                                    st.success(f"Undid outlier removal from {action['column']}")
+                                    st.experimental_rerun()
+                else:
+                    st.success(f"No outliers found in {selected_col} using {method} method!")
+        else:
+            st.warning("No numeric columns found for outlier detection.")
 
     with tab3:
         st.subheader("📈 Visualizations")
